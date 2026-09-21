@@ -38,7 +38,7 @@ def train_agent(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M15, num_candles=50000)
     train_df = df.iloc[:split_idx]
     
     print(f"--- Creating Environment ---")
-    env = DummyVecEnv([lambda: ForexTradingEnv(train_df)])
+    env = DummyVecEnv([lambda: ForexTradingEnv(train_df, initial_balance=25000.0, max_drawdown=0.12)])
     
     print(f"--- Training PPO Agent (This may take a while) ---")
     # Using PPO (Proximal Policy Optimization)
@@ -56,4 +56,4 @@ def train_agent(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M15, num_candles=50000)
     print(f"--- Training Complete! Model saved to {model_path}.zip ---")
 
 if __name__ == "__main__":
-    train_agent(symbol="XAUUSD", num_candles=20000)
+    train_agent(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5, num_candles=20000)

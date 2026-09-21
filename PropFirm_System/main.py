@@ -204,16 +204,13 @@ def main():
                     else:
                         for symbol in config.get("symbols_to_trade", ["XAUUSD"]):
                             logging.info(f"Analyzing {symbol}...")
-                            positions = mt5.positions_get(symbol=symbol)
-                            if positions is not None and len(positions) > 0:
-                                logging.info(f"Already in a position for {symbol}. Skipping.")
-                                continue
-    
+                            
                             tf_map = {1: mt5.TIMEFRAME_M1, 5: mt5.TIMEFRAME_M5, 15: mt5.TIMEFRAME_M15, 60: mt5.TIMEFRAME_H1}
                             mt5_tf = tf_map.get(tf_minutes, mt5.TIMEFRAME_M15)
                             
                             action, sl_price, tp_price = 'HOLD', 0.0, 0.0
                             
+                            # Execute Strategy Analysis
                             if hasattr(strategy, "analyze_symbol"):
                                 action, sl_price, tp_price = strategy.analyze_symbol(symbol, fetcher)
                             else:
@@ -222,8 +219,26 @@ def main():
                                     action = strategy.analyze(df)
                                     if action in ['BUY', 'SELL']:
                                         sl_price, tp_price = strategy.calculate_sl_tp(df, action)
-    
-                            if action in ['BUY', 'SELL'] and sl_price > 0 and tp_price > 0:
+
+                            # Dynamic position management
+                            positions = mt5.positions_get(symbol=symbol)
+                            has_open_position = positions is not None and len(positions) > 0
+
+                            if has_open_position:
+                                for pos in positions:
+                                    pos_type = "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL"
+                                    # If action is HOLD (0 in RL) or OPPOSITE of our position, we CLOSE it
+                                    if action == 'HOLD' or (action == 'BUY' and pos_type == 'SELL') or (action == 'SELL' and pos_type == 'BUY'):
+                                        logging.info(f"Dynamic Exit: Strategy signaled {action}, closing existing {pos_type} position {pos.ticket} on {symbol}")
+                                        tick = mt5.symbol_info_tick(symbol)
+                                        close_price = tick.bid if pos_type == 'BUY' else tick.ask
+                                        executor.close_all_positions() # Simple catch-all to flatten
+                            
+                            # Re-check open positions after potential closures
+                            positions = mt5.positions_get(symbol=symbol)
+                            has_open_position = positions is not None and len(positions) > 0
+
+                            if action in ['BUY', 'SELL'] and not has_open_position and sl_price > 0 and tp_price > 0:
                                 tick_info = mt5.symbol_info(symbol)
                                 if not tick_info: continue
                                     

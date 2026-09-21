@@ -120,7 +120,7 @@ class ForexTradingEnv(gym.Env):
         elif self.current_position == -1:
             reward += (self.entry_price - current_price) * 10
         elif self.current_position == 0:
-            # Inactivity penalty: penalize the agent slightly for sitting out, forcing it to find trades
-            reward -= 0.5
+            # We removed the inactivity penalty because it forced the agent to take random bad trades.
+            reward += 0.0
             
         return self._next_observation(), reward, done, False, {}

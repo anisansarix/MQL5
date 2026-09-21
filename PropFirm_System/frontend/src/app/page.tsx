@@ -16,6 +16,7 @@ export default function Home() {
   
   const [activeTab, setActiveTab] = useState<'positions' | 'history'>('positions');
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [logs, setLogs] = useState<string>("");
 
   // Fetch State & Config
   useEffect(() => {
@@ -25,13 +26,15 @@ export default function Home() {
         const apiKey = process.env.NEXT_PUBLIC_API_KEY || 'dev_secret_key_change_me_in_production';
         const headers = { 'X-API-Key': apiKey };
         
-        const [stateRes, configRes] = await Promise.all([
+        const [stateRes, configRes, logsRes] = await Promise.all([
           axios.get(`${apiUrl}/state`, { headers }),
-          axios.get(`${apiUrl}/config`, { headers })
+          axios.get(`${apiUrl}/config`, { headers }),
+          axios.get(`${apiUrl}/logs?lines=20`, { headers })
         ]);
         
         setState(stateRes.data);
         setConfig(configRes.data);
+        setLogs(logsRes.data.logs);
       } catch (err) {
         console.error("Error fetching state or config", err);
       }
@@ -343,6 +346,23 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        {/* Terminal / Telemetry Layout */}
+        <div className="mt-4 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4 flex flex-col h-48">
+          <div className="flex justify-between items-center mb-2 pb-2 border-b border-[#2a2a2a]">
+            <h2 className="text-sm font-medium flex items-center gap-2">
+              <Settings size={14}/> Engine Telemetry & Logs
+            </h2>
+            <div className="flex gap-4 text-xs text-gray-400">
+              <span>Total Trades: {history.length}</span>
+              <span>Win Rate: {history.length > 0 ? ((history.filter((h:any) => h.profit > 0).length / history.length) * 100).toFixed(0) : 0}%</span>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto bg-[#0a0a0a] rounded p-2 text-xs font-mono text-gray-300">
+            <pre className="whitespace-pre-wrap">{logs}</pre>
+          </div>
+        </div>
+
       </div>
     </div>
   );

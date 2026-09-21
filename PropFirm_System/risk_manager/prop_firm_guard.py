@@ -141,7 +141,27 @@ class PropFirmGuard:
             
         lot_size_by_risk = risk_amount_usd / loss_per_lot
         
-        lot_size = max(symbol_info.volume_min, min(symbol_info.volume_max, lot_size_by_risk))
+        # Enforce leverage limits (e.g., 1:30 for Metals)
+        leverage = self.get_leverage_for_symbol(symbol)
+        contract_size = symbol_info.trade_contract_size
+        tick_data = mt5.symbol_info_tick(symbol)
+        account_info = mt5.account_info()
+        
+        if account_info and tick_data and contract_size > 0:
+            free_margin = account_info.margin_free
+            current_price = tick_data.ask
+            # Calculate max volume allowed by available margin and specific instrument leverage
+            max_position_value = free_margin * leverage
+            max_lots_by_margin = max_position_value / (contract_size * current_price)
+            
+            # Cap our risk-based lot size by the maximum allowed by leverage
+            target_lot_size = min(lot_size_by_risk, max_lots_by_margin)
+            if target_lot_size < lot_size_by_risk:
+                logging.info(f"Lot size capped by {leverage}:1 leverage constraint ({lot_size_by_risk:.2f} -> {target_lot_size:.2f})")
+        else:
+            target_lot_size = lot_size_by_risk
+        
+        lot_size = max(symbol_info.volume_min, min(symbol_info.volume_max, target_lot_size))
         lot_size = round(lot_size / symbol_info.volume_step) * symbol_info.volume_step
         
         logging.info(f"Calculated lot size for {symbol}: {lot_size} (Risk: ${risk_amount_usd:.2f})")
