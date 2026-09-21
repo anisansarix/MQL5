@@ -124,107 +124,131 @@ def main():
         guard.update_daily_balance()
         save_state(guard)
 
-        # Schedule the daily balance update at midnight (server time)
-        schedule.every().day.at("00:00").do(guard.update_daily_balance)
         logging.info("System initialized. Starting main loop...")
 
         # We will track the last run time to manually handle intervals so we can dynamically adapt to timeframe changes
         last_run_time = 0
+        last_recorded_day = None
 
         while True:
-            config = load_config()
-            status = config.get("bot_status", "stopped")
-            
-            # Calculate next run time
-            tf_minutes = config.get("timeframe", 15)
-            current_time = time.time()
-            next_run_time = last_run_time + (tf_minutes * 60)
-            
-            # Save state so dashboard always has fresh data even if stopped
-            save_state(guard, next_run_time=next_run_time)
-            
-            if status == "stopped":
-                time.sleep(5)
-                continue
-            
-            schedule.run_pending()
-            
-            # Dynamic execution based on timeframe
-            tf_minutes = config.get("timeframe", 15)
-            current_time = time.time()
-            if (current_time - last_run_time) >= (tf_minutes * 60):
-                # We need to run the trading job
-                # Re-instantiate strategy if config changed
-                new_strat = config.get("strategy", "FinRLStrategy")
+            try:
+                # Reconnect logic: ensure MT5 IPC is still alive
+                if mt5.terminal_info() is None:
+                    logging.error("Lost connection to MT5 terminal! Attempting to re-initialize...")
+                    if not mt5.initialize():
+                        logging.critical("Failed to reconnect to MT5. Retrying in 10s...")
+                        time.sleep(10)
+                        continue
+                    logging.info("Successfully reconnected to MT5.")
+                    
+                config = load_config()
+                status = config.get("bot_status", "stopped")
                 
-                # Check if we need to switch strategy
-                current_strat_class = strategy.__class__.__name__
-                if new_strat != current_strat_class:
-                    if new_strat == "FinRLStrategy":
-                        strategy = FinRLStrategy(model_path=config.get("model_path"))
-                    elif new_strat == "NYTrendContinuation":
-                        strategy = NYTrendContinuation()
-                    else:
-                        strategy = TrendFollowingStrategy()
-                elif new_strat == "FinRLStrategy" and strategy.model_path != config.get("model_path"):
-                    # Same class but model path changed
-                    strategy = FinRLStrategy(model_path=config.get("model_path"))
+                # Check for server day rollover
+                tick = mt5.symbol_info_tick(config.get("symbols_to_trade", ["XAUUSD"])[0])
+                if tick:
+                    server_day = datetime.utcfromtimestamp(tick.time).day
+                    if last_recorded_day is None:
+                        last_recorded_day = server_day
+                    elif server_day != last_recorded_day:
+                        logging.info("Server day rollover detected. Updating daily balance.")
+                        guard.update_daily_balance()
+                        last_recorded_day = server_day
                 
-                # Execute logic
-                guard.max_daily_loss_pct = config.get("max_daily_loss_pct", 5.0) / 100.0
-                guard.max_trailing_dd_pct = config.get("max_trailing_dd_pct", 10.0) / 100.0
+                # Calculate next run time
+                tf_minutes = config.get("timeframe", 15)
+                current_time = time.time()
+                next_run_time = last_run_time + (tf_minutes * 60)
                 
-                logging.info(f"--- Running Trading Cycle (Config: {config.get('symbols_to_trade')} | {new_strat}) ---")
+                # Save state so dashboard always has fresh data even if stopped
+                save_state(guard, next_run_time=next_run_time)
                 
-                # 1. Check Global Risk
-                if not guard.check_risk_status():
-                    logging.warning("Global risk limits breached. Halting trading.")
-                    executor.close_all_positions()
-                else:
-                    for symbol in config.get("symbols_to_trade", ["XAUUSD"]):
-                        logging.info(f"Analyzing {symbol}...")
-                        positions = mt5.positions_get(symbol=symbol)
-                        if positions is not None and len(positions) > 0:
-                            logging.info(f"Already in a position for {symbol}. Skipping.")
-                            continue
-
-                        tf_map = {1: mt5.TIMEFRAME_M1, 5: mt5.TIMEFRAME_M5, 15: mt5.TIMEFRAME_M15, 60: mt5.TIMEFRAME_H1}
-                        mt5_tf = tf_map.get(tf_minutes, mt5.TIMEFRAME_M15)
-                        
-                        action, sl_price, tp_price = 'HOLD', 0.0, 0.0
-                        
-                        if hasattr(strategy, "analyze_symbol"):
-                            action, sl_price, tp_price = strategy.analyze_symbol(symbol, fetcher)
+                if status == "stopped":
+                    time.sleep(5)
+                    continue
+                
+                schedule.run_pending()
+                
+                # Dynamic execution based on timeframe
+                tf_minutes = config.get("timeframe", 15)
+                current_time = time.time()
+                if (current_time - last_run_time) >= (tf_minutes * 60):
+                    # We need to run the trading job
+                    # Re-instantiate strategy if config changed
+                    new_strat = config.get("strategy", "FinRLStrategy")
+                    
+                    # Check if we need to switch strategy
+                    current_strat_class = strategy.__class__.__name__
+                    if new_strat != current_strat_class:
+                        if new_strat == "FinRLStrategy":
+                            strategy = FinRLStrategy(model_path=config.get("model_path"))
+                        elif new_strat == "NYTrendContinuation":
+                            strategy = NYTrendContinuation()
                         else:
-                            df = fetcher.fetch_historical_data(symbol, mt5_tf, num_candles=250)
-                            if not df.empty:
-                                action = strategy.analyze(df)
-                                if action in ['BUY', 'SELL']:
-                                    sl_price, tp_price = strategy.calculate_sl_tp(df, action)
-
-                        if action in ['BUY', 'SELL'] and sl_price > 0 and tp_price > 0:
-                            tick_info = mt5.symbol_info(symbol)
-                            if not tick_info: continue
-                                
-                            # Calculate SL points accurately
-                            if action == 'BUY':
-                                sl_points = abs(tick_info.ask - sl_price) / tick_info.point
+                            strategy = TrendFollowingStrategy()
+                    elif new_strat == "FinRLStrategy" and strategy.model_path != config.get("model_path"):
+                        # Same class but model path changed
+                        strategy = FinRLStrategy(model_path=config.get("model_path"))
+                    
+                    # Execute logic
+                    guard.max_daily_loss_pct = config.get("max_daily_loss_pct", 0.01)
+                    guard.max_trailing_dd_pct = config.get("max_trailing_dd_pct", 0.03)
+                    guard.max_daily_trades = config.get("max_daily_trades", 10)
+                    
+                    logging.info(f"--- Running Trading Cycle (Config: {config.get('symbols_to_trade')} | {new_strat}) ---")
+                    
+                    # 1. Check Global Risk
+                    if not guard.check_risk_status():
+                        logging.warning("Global risk limits breached. Halting trading.")
+                        executor.close_all_positions()
+                    else:
+                        for symbol in config.get("symbols_to_trade", ["XAUUSD"]):
+                            logging.info(f"Analyzing {symbol}...")
+                            positions = mt5.positions_get(symbol=symbol)
+                            if positions is not None and len(positions) > 0:
+                                logging.info(f"Already in a position for {symbol}. Skipping.")
+                                continue
+    
+                            tf_map = {1: mt5.TIMEFRAME_M1, 5: mt5.TIMEFRAME_M5, 15: mt5.TIMEFRAME_M15, 60: mt5.TIMEFRAME_H1}
+                            mt5_tf = tf_map.get(tf_minutes, mt5.TIMEFRAME_M15)
+                            
+                            action, sl_price, tp_price = 'HOLD', 0.0, 0.0
+                            
+                            if hasattr(strategy, "analyze_symbol"):
+                                action, sl_price, tp_price = strategy.analyze_symbol(symbol, fetcher)
                             else:
-                                sl_points = abs(tick_info.bid - sl_price) / tick_info.point
+                                df = fetcher.fetch_historical_data(symbol, mt5_tf, num_candles=250)
+                                if not df.empty:
+                                    action = strategy.analyze(df)
+                                    if action in ['BUY', 'SELL']:
+                                        sl_price, tp_price = strategy.calculate_sl_tp(df, action)
+    
+                            if action in ['BUY', 'SELL'] and sl_price > 0 and tp_price > 0:
+                                tick_info = mt5.symbol_info(symbol)
+                                if not tick_info: continue
+                                    
+                                # Calculate SL distance in raw price units
+                                if action == 'BUY':
+                                    sl_distance_price = abs(tick_info.ask - sl_price)
+                                else:
+                                    sl_distance_price = abs(tick_info.bid - sl_price)
+                                    
+                                # Dynamic risk based on drawdown
+                                risk_pct = guard.get_dynamic_risk_pct()
+                                account_info = mt5.account_info()
+                                risk_amount_usd = account_info.equity * risk_pct if account_info else 100.0
                                 
-                            # Dynamic risk based on drawdown
-                            risk_pct = guard.get_dynamic_risk_pct()
-                            account_info = mt5.account_info()
-                            risk_amount_usd = account_info.equity * risk_pct if account_info else 100.0
-                            
-                            lot_size = guard.calculate_position_size(symbol, risk_amount_usd, sl_points)
-                            
-                            if lot_size > 0:
-                                logging.info(f"Executing {action} on {symbol}. Vol: {lot_size}, SL: {sl_price:.4f}, TP: {tp_price:.4f}")
-                                executor.place_market_order(symbol, action, lot_size, sl_price, tp_price)
+                                lot_size = guard.calculate_position_size(symbol, risk_amount_usd, sl_distance_price)
+                                
+                                if lot_size > 0:
+                                    logging.info(f"Executing {action} on {symbol}. Vol: {lot_size}, SL: {sl_price:.4f}, TP: {tp_price:.4f}")
+                                    executor.place_market_order(symbol, action, lot_size, sl_price, tp_price)
+    
+                    last_run_time = current_time
 
-                last_run_time = current_time
-
+            except Exception as e:
+                logging.error(f"Error in main loop cycle: {e}")
+                
             time.sleep(5)
 
     except Exception as e:

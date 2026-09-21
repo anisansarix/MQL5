@@ -1,5 +1,10 @@
 import MetaTrader5 as mt5
 import logging
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.notifier import send_alert
 from risk_manager.prop_firm_guard import PropFirmGuard
 
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +22,10 @@ class MT5Executor:
             
         result = mt5.order_send(request)
         
+        if result is None:
+            logging.error(f"Order send failed (IPC or connection error), error code: {mt5.last_error()}")
+            return False
+            
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logging.error(f"Order failed, retcode={result.retcode}")
             # Dictionary of common error codes
@@ -81,6 +90,8 @@ class MT5Executor:
         if positions is None or len(positions) == 0:
             return
             
+        success_all = True
+        
         for pos in positions:
             tick = mt5.symbol_info_tick(pos.symbol)
             symbol_info = mt5.symbol_info(pos.symbol)
@@ -114,5 +125,33 @@ class MT5Executor:
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": filling_mode,
             }
-            mt5.order_send(request)
-        logging.info("All positions closed.")
+            
+            # Retry loop: try twice
+            pos_closed = False
+            for attempt in range(2):
+                result = mt5.order_send(request)
+                if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    logging.info(f"Successfully closed position {pos.ticket} on {pos.symbol}")
+                    pos_closed = True
+                    break
+                else:
+                    err_code = mt5.last_error() if result is None else result.retcode
+                    logging.warning(f"Failed to close {pos.ticket} on attempt {attempt+1}, error: {err_code}")
+                    # Re-fetch tick price for retry
+                    import time
+                    time.sleep(0.5)
+                    tick = mt5.symbol_info_tick(pos.symbol)
+                    request["price"] = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+                    
+            if not pos_closed:
+                msg = f"EMERGENCY CLOSE FAILED for position {pos.ticket} on {pos.symbol}!"
+                logging.critical(msg)
+                send_alert(msg, "CRITICAL")
+                success_all = False
+                
+        if success_all:
+            logging.info("All positions closed successfully.")
+        else:
+            msg = "Some positions failed to close during emergency shutdown."
+            logging.critical(msg)
+            send_alert(msg, "CRITICAL")

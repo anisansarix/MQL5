@@ -7,5 +7,6 @@
     "strategy": "NYTrendContinuation",
     "model_path": "",
     "max_daily_loss_pct": 1.0,
-    "max_trailing_dd_pct": 3.0
+    "max_trailing_dd_pct": 3.0,
+    "max_daily_trades": 10
 }

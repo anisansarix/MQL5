@@ -1,15 +1,21 @@
 import MetaTrader5 as mt5
-from datetime import datetime, timezone, timedelta
 import logging
+from datetime import datetime, timedelta, timezone
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.notifier import send_alert
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PropFirmGuard:
-    def __init__(self, initial_balance: float, max_daily_loss_pct: float = 0.01, max_total_loss_pct: float = 0.03):
+    def __init__(self, initial_balance: float, max_daily_loss_pct: float = 0.05, max_trailing_dd_pct: float = 0.10, max_daily_trades: int = 10):
         self.initial_balance = initial_balance
-        # Note: Strategy calls for 1% daily loss halt, and 3% total halt
         self.max_daily_loss_pct = max_daily_loss_pct
-        self.max_total_loss_pct = max_total_loss_pct
+        self.max_trailing_dd_pct = max_trailing_dd_pct
+        self.max_daily_trades = max_daily_trades
+        self.max_trailing_dd_pct = max_trailing_dd_pct
         self.start_of_day_balance = initial_balance
         self.highest_equity = initial_balance
         
@@ -27,16 +33,27 @@ class PropFirmGuard:
             logging.info(f"Updated start of day balance to: {self.start_of_day_balance}")
 
     def get_daily_trades_count(self) -> int:
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        # Fetch deals from start of today to now + 1 day
-        deals = mt5.history_deals_get(today, datetime.now() + timedelta(days=1))
+        # Use server time instead of local time
+        tick = mt5.symbol_info_tick("EURUSD")
+        if not tick:
+            tick = mt5.symbol_info_tick("XAUUSD")
+            
+        if tick:
+            # tick.time is an epoch integer representing broker server time
+            server_dt = datetime.fromtimestamp(tick.time, timezone.utc).replace(tzinfo=None)
+        else:
+            server_dt = datetime.utcnow()
+            
+        today = server_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Fetch deals from start of server today to now + 1 day
+        deals = mt5.history_deals_get(today, server_dt + timedelta(days=1))
         
         if not deals:
             return 0
             
         count = 0
         for d in deals:
-            # We count ENTRY_IN deals as the start of a trade
             if d.entry == mt5.DEAL_ENTRY_IN:
                 count += 1
         return count
@@ -53,22 +70,28 @@ class PropFirmGuard:
         if current_equity > self.highest_equity:
             self.highest_equity = current_equity
             
-        # 1. Check Max Total Drawdown (3%)
+        # 1. Check Max Trailing Drawdown
         total_drawdown = (self.initial_balance - current_equity) / self.initial_balance
-        if total_drawdown >= self.max_total_loss_pct:
-            logging.critical(f"MAX DRAWDOWN REACHED: {total_drawdown:.2%}. Trading blocked.")
+        if total_drawdown >= self.max_trailing_dd_pct:
+            msg = f"MAX DRAWDOWN REACHED: {total_drawdown:.2%}. Trading blocked."
+            logging.critical(msg)
+            send_alert(msg, "CRITICAL")
             return False
             
-        # 2. Check Daily Loss Limit (1%)
+        # 2. Check Max Daily Loss
         daily_loss = (self.start_of_day_balance - current_equity) / self.start_of_day_balance
         if daily_loss >= self.max_daily_loss_pct:
-            logging.critical(f"DAILY LOSS LIMIT REACHED: {daily_loss:.2%}. Trading blocked for today.")
+            msg = f"DAILY LOSS LIMIT REACHED: {daily_loss:.2%}. Trading blocked for today."
+            logging.critical(msg)
+            send_alert(msg, "CRITICAL")
             return False
             
-        # 3. Check Max Trades Per Day (Temporarily increased for testing)
+        # 3. Check Max Trades Per Day
         daily_trades = self.get_daily_trades_count()
-        if daily_trades >= 999:
-            logging.warning(f"MAX DAILY TRADES REACHED: {daily_trades}/999. Trading blocked for today.")
+        if daily_trades >= self.max_daily_trades:
+            msg = f"MAX DAILY TRADES REACHED: {daily_trades}/{self.max_daily_trades}. Trading blocked for today."
+            logging.warning(msg)
+            send_alert(msg, "WARNING")
             return False
             
         return True
@@ -100,7 +123,7 @@ class PropFirmGuard:
         else:
             return self.instrument_leverage["forex"]
 
-    def calculate_position_size(self, symbol: str, risk_amount_usd: float, stop_loss_points: float) -> float:
+    def calculate_position_size(self, symbol: str, risk_amount_usd: float, sl_distance_price: float) -> float:
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
             logging.error(f"Symbol {symbol} not found.")
@@ -109,10 +132,10 @@ class PropFirmGuard:
         tick_size = symbol_info.trade_tick_size
         tick_value = symbol_info.trade_tick_value
         
-        if stop_loss_points <= 0:
+        if sl_distance_price <= 0 or tick_size <= 0:
             return 0.0
 
-        loss_per_lot = (stop_loss_points / tick_size) * tick_value
+        loss_per_lot = (sl_distance_price / tick_size) * tick_value
         if loss_per_lot == 0:
             return 0.0
             

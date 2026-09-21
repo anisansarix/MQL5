@@ -13,7 +13,7 @@ Proprietary trading firms (Prop Firms such as FTMO, FundedNext, The Funded Trade
 - **Inconsistent Position Sizing**: Failing to dynamically normalize risk across different tick sizes, point values, and asset classes.
 
 ### 1.2 The Solution
-This workstation hosts the **Prop Firm Quant System** (`PropFirm_System/`), an end-to-end, AI-powered quantitative trading workstation integrated directly with **MetaTrader 5 (MT5)**.
+This workspace hosts the **Prop Firm Quant System** (`PropFirm_System/`), an end-to-end, AI-powered quantitative trading workstation integrated directly with **MetaTrader 5 (MT5)**.
 
 Rather than relying on legacy MQL5 scripts with limited machine learning capabilities and cumbersome debugging, this system decouples the architecture:
 - **MetaTrader 5 (Terminal)** is treated strictly as an **execution gateway and live data broker**.
@@ -81,45 +81,60 @@ flowchart TD
 
 ---
 
-## 3. Directory Structure
+## 3. Directory & Workspace Structure
 
 ```
-PropFirm_System/
-├── config.json               # Active dynamic system configuration
-├── config_manager.py         # Thread-safe JSON configuration loader/writer
-├── state.json                # Live state snapshot exposed to Dashboard
-├── bot.log                   # Rolling log file for engine activities
-├── main.py                   # Main orchestration daemon & loop
-├── dashboard.py              # Streamlit multi-page dashboard entry point
-├── requirements.txt          # Python package dependencies
-├── check_gpu.py              # PyTorch CUDA / GPU diagnostic utility
+d:/Omnity Era/Antigravity/MQL5/
 │
-├── backtest/                 # Offline prop firm challenge simulator
-│   └── prop_firm_backtester.py
+├── Experts/                      # Standard MT5 Expert Advisors (Advisors, Free Robots)
+├── Files/                        # MT5 File Sandbox
+├── Images/                       # MT5 Graphic Resources
+├── Include/                      # Standard MQL5 Include libraries
+├── Indicators/                   # Standard & Custom MT5 Technical Indicators
+├── Libraries/                    # MT5 DLL/Dynamic Link Libraries
+├── Profiles/                     # MT5 Terminal Profiles and Templates
+├── Scripts/                      # MT5 One-off scripts
+├── Services/                     # MT5 Background Services
+├── Shared Projects/              # MetaTrader MQL5 Cloud Projects
+├── experts.dat                   # MT5 terminal configuration binary
+├── logs/                         # MT5 terminal engine logs
 │
-├── data_pipeline/            # Market data ingestion from MT5
-│   └── mt5_data_fetcher.py
-│
-├── execution/                # Order placement, filling, and emergency liquidation
-│   └── mt5_executor.py
-│
-├── risk_manager/             # Prop firm compliance rules & position sizing
-│   └── prop_firm_guard.py
-│
-├── strategy/                 # Algorithmic & Reinforcement Learning models
-│   ├── base_strategy.py      # Technical indicator strategy (EMA/RSI/ATR)
-│   ├── finrl_env.py          # Custom Gymnasium RL environment
-│   ├── finrl_strategy.py     # Real-time PPO model inference engine
-│   ├── finrl_trainer.py      # CUDA-accelerated PPO training script
-│   └── models/               # Serialized PPO neural network weights (.zip)
-│       ├── ppo_EURUSD_m15.zip
-│       └── ppo_XAUUSD_m15.zip
-│
-└── pages/                    # Streamlit control pages
-    ├── 1_⚙️_Configuration.py
-    ├── 2_🧠_Strategy_Manager.py
-    ├── 3_🚀_Process_Control.py
-    └── 4_📝_System_Logs.py
+└── PropFirm_System/              # 🚀 PRIMARY APPLICATION: Python Quant System
+    ├── config.json               # Active dynamic system configuration
+    ├── config_manager.py         # Thread-safe JSON configuration loader/writer
+    ├── state.json                # Live state snapshot exposed to Dashboard
+    ├── bot.log                   # Rolling log file for engine activities
+    ├── main.py                   # Main orchestration daemon & loop
+    ├── dashboard.py              # Streamlit multi-page dashboard entry point
+    ├── requirements.txt          # Python package dependencies
+    ├── check_gpu.py              # PyTorch CUDA / GPU diagnostic utility
+    │
+    ├── backtest/                 # Offline prop firm challenge simulator
+    │   └── prop_firm_backtester.py
+    │
+    ├── data_pipeline/            # Market data ingestion from MT5
+    │   └── mt5_data_fetcher.py
+    │
+    ├── execution/                # Order placement, filling, and emergency liquidation
+    │   └── mt5_executor.py
+    │
+    ├── risk_manager/             # Prop firm compliance rules & position sizing
+    │   └── prop_firm_guard.py
+    │
+    ├── strategy/                 # Algorithmic & Reinforcement Learning models
+    │   ├── base_strategy.py      # Technical indicator strategy (EMA/RSI/ATR)
+    │   ├── finrl_env.py          # Custom Gymnasium RL environment
+    │   ├── finrl_strategy.py     # Real-time PPO model inference engine
+    │   ├── finrl_trainer.py      # CUDA-accelerated PPO training script
+    │   └── models/               # Serialized PPO neural network weights (.zip)
+    │       ├── ppo_EURUSD_m15.zip
+    │       └── ppo_XAUUSD_m15.zip
+    │
+    └── pages/                    # Streamlit control pages
+        ├── 1_⚙️_Configuration.py
+        ├── 2_🧠_Strategy_Manager.py
+        ├── 3_🚀_Process_Control.py
+        └── 4_📝_System_Logs.py
 ```
 
 ---
@@ -278,9 +293,9 @@ sequenceDiagram
 4. In the **Market Watch** panel, ensure your traded instruments (e.g. `XAUUSD`, `EURUSD`, `BTCUSD`) are visible and active.
 
 ### Step 2: Environment Verification
-Open a PowerShell terminal in `PropFirm_System/`:
+Open a PowerShell terminal in your repository root:
 ```powershell
-cd "d:\Omnity Era\Antigravity\MQL5\PropFirm_System"
+cd PropFirm_System
 python check_gpu.py
 ```
 *Confirms PyTorch CUDA availability for deep learning model training.*

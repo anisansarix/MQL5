@@ -3,13 +3,52 @@ import ta
 import logging
 import MetaTrader5 as mt5
 import pytz
-from datetime import datetime, time
+import urllib.request
+import json
+from datetime import datetime, time, timedelta
 
 logging.basicConfig(level=logging.INFO)
+
+class NewsFilter:
+    def __init__(self):
+        self.url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
+        self.last_fetch = None
+        self.events = []
+
+    def fetch_events(self):
+        now = datetime.utcnow()
+        # Cache for 4 hours
+        if self.last_fetch and (now - self.last_fetch).total_seconds() < 3600 * 4:
+            return
+
+        try:
+            req = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0'})
+            data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            self.events = []
+            for event in data:
+                if event.get('country') == 'USD' and event.get('impact') == 'High':
+                    event_time = datetime.fromisoformat(event['date']).astimezone(pytz.utc)
+                    self.events.append(event_time)
+            self.last_fetch = now
+            logging.info(f"Fetched {len(self.events)} high-impact USD news events for the week.")
+        except Exception as e:
+            logging.error(f"Failed to fetch news calendar: {e}")
+
+    def is_news_embargo(self, current_utc: datetime) -> bool:
+        self.fetch_events()
+        # Make current_utc timezone-aware for comparison
+        if current_utc.tzinfo is None:
+            current_utc = pytz.utc.localize(current_utc)
+            
+        for ev_time in self.events:
+            if abs((current_utc - ev_time).total_seconds()) <= 600:
+                return True
+        return False
 
 class NYTrendContinuation:
     def __init__(self):
         self.ny_tz = pytz.timezone('America/New_York')
+        self.news_filter = NewsFilter()
 
     def _get_ny_time(self, server_timestamp, offset_hours: int):
         utc_time = server_timestamp - pd.Timedelta(hours=offset_hours)
@@ -57,8 +96,12 @@ class NYTrendContinuation:
         # Offset calculation: server time - UTC time
         offset_hours = round((last_candle_time - utc_now).total_seconds() / 3600)
 
-        # 1. Trading Session Check
+        # 1. Trading Session & News Check
         if not self._is_ny_session(last_candle_time, offset_hours):
+            return 'HOLD', 0.0, 0.0
+            
+        if self.news_filter.is_news_embargo(utc_now):
+            logging.info("News embargo active (within 10m of major USD news). Skipping trade.")
             return 'HOLD', 0.0, 0.0
 
         # 2. H1 Trend Filter
