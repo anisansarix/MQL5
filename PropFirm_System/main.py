@@ -16,7 +16,8 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler("bot.log"),
         logging.StreamHandler()
-    ]
+    ],
+    force=True
 )
 
 # Configuration is now handled dynamically via config.json
