@@ -22,7 +22,7 @@ logging.basicConfig(
 # Configuration is now handled dynamically via config.json
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 def save_state(guard: PropFirmGuard, next_run_time: float = 0):
     account_info = mt5.account_info()
@@ -147,7 +147,7 @@ def main():
                 # Check for server day rollover
                 tick = mt5.symbol_info_tick(config.get("symbols_to_trade", ["XAUUSD"])[0])
                 if tick:
-                    server_day = datetime.utcfromtimestamp(tick.time).day
+                    server_day = datetime.fromtimestamp(tick.time, timezone.utc).day
                     if last_recorded_day is None:
                         last_recorded_day = server_day
                     elif server_day != last_recorded_day:

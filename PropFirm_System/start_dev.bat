@@ -15,4 +15,3 @@ timeout /t 5 /nobreak > nul
 
 echo Opening Dashboard...
 start http://localhost:3000
-pause
