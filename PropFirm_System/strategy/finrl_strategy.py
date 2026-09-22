@@ -2,82 +2,90 @@ import pandas as pd
 import numpy as np
 import ta
 import logging
+import MetaTrader5 as mt5
 from stable_baselines3 import PPO
 
 class FinRLStrategy:
     """
-    Live trading strategy that uses a pre-trained FinRL (Stable Baselines 3) model.
+    Live trading strategy that uses a pre-trained FinRL (Stable Baselines 3) model
+    with Continuous Action Space.
     """
     def __init__(self, model_path: str):
         self.model_path = model_path
         try:
-            # We force device='cpu' for live inference because the overhead of moving a tiny array 
-            # (5 indicators) to the RTX 3050 is slower than just running it on the CPU.
             self.model = PPO.load(model_path, device='cpu')
             logging.info(f"Successfully loaded RL model from {model_path}")
         except Exception as e:
             logging.error(f"Failed to load RL model: {e}")
             self.model = None
 
-    def _prepare_state(self, df: pd.DataFrame) -> np.ndarray:
-        """Calculates indicators and formats the latest row exactly as the Gym Env expects."""
+    def _prepare_state(self, df: pd.DataFrame, current_position: float) -> np.ndarray:
         df_calc = df.copy()
         df_calc['ema_fast'] = ta.trend.ema_indicator(df_calc['close'], window=50)
         df_calc['ema_slow'] = ta.trend.ema_indicator(df_calc['close'], window=200)
         df_calc['rsi'] = ta.momentum.rsi(df_calc['close'], window=14)
         df_calc['atr'] = ta.volatility.average_true_range(df_calc['high'], df_calc['low'], df_calc['close'], window=14)
         
-        # Extract the last row features corresponding to self.features in ForexTradingEnv
-        features = ['close', 'ema_fast', 'ema_slow', 'rsi', 'atr']
+        df_calc['close_norm'] = df_calc['close'].pct_change()
+        df_calc['ema_fast_norm'] = (df_calc['ema_fast'] / df_calc['close']) - 1.0
+        df_calc['ema_slow_norm'] = (df_calc['ema_slow'] / df_calc['close']) - 1.0
+        df_calc['rsi_norm'] = df_calc['rsi'] / 100.0
+        df_calc['atr_norm'] = df_calc['atr'] / df_calc['close']
+        
+        features = ['close_norm', 'ema_fast_norm', 'ema_slow_norm', 'rsi_norm', 'atr_norm']
         last_row = df_calc.iloc[-1]
         
-        # Check for NaNs (since EMA 200 needs 200 candles)
         if last_row.isna().any():
             return None
             
-        obs = last_row[features].values
+        obs = list(last_row[features].values)
+        obs.append(current_position)
         return np.array(obs, dtype=np.float32)
 
-    def analyze(self, df: pd.DataFrame) -> str:
+    def analyze_symbol(self, symbol: str, fetcher, current_position: float = 0.0) -> tuple:
         """
-        Analyzes the dataframe and returns a signal: 'BUY', 'SELL', or 'HOLD'.
+        Analyzes the dataframe and returns a tuple: (action, confidence_scale, sl_price, tp_price)
         """
-        if self.model is None or len(df) < 200:
-            return 'HOLD'
-            
-        state = self._prepare_state(df)
-        if state is None:
-            return 'HOLD'
-            
-        # Predict the action using the trained model
-        action, _states = self.model.predict(state, deterministic=True)
+        action = 'HOLD'
+        confidence_scale = 0.0
+        sl_price = 0.0
+        tp_price = 0.0
         
-        # Action space: 0 (Hold), 1 (Buy), 2 (Sell)
-        if action == 1:
-            return 'BUY'
-        elif action == 2:
-            return 'SELL'
-        else:
-            return 'HOLD'
-
-    def calculate_sl_tp(self, df: pd.DataFrame, action: str, atr_period: int = 14, atr_multiplier: float = 1.5):
-        """
-        Calculates Stop Loss and Take Profit prices based on ATR.
-        In advanced RL, SL/TP could also be continuous actions chosen by the agent,
-        but for discrete actions, an ATR trailing setup is standard.
-        """
+        if self.model is None:
+            return action, confidence_scale, sl_price, tp_price
+            
+        df = fetcher.fetch_historical_data(symbol, timeframe=mt5.TIMEFRAME_M5, num_candles=250)
+        if df.empty or len(df) < 200:
+            return action, confidence_scale, sl_price, tp_price
+            
+        state = self._prepare_state(df, current_position)
+        if state is None:
+            return action, confidence_scale, sl_price, tp_price
+            
+        # Predict the action using the trained continuous model
+        rl_action, _states = self.model.predict(state, deterministic=True)
+        target_pos = float(np.clip(rl_action[0], -1.0, 1.0))
+        
+        # Calculate SL / TP using ATR
         df_calc = df.copy()
-        df_calc['atr'] = ta.volatility.average_true_range(df_calc['high'], df_calc['low'], df_calc['close'], window=atr_period)
+        df_calc['atr'] = ta.volatility.average_true_range(df_calc['high'], df_calc['low'], df_calc['close'], window=14)
         last_close = df_calc.iloc[-1]['close']
         last_atr = df_calc.iloc[-1]['atr']
+        atr_multiplier = 1.5
         
-        if action == 'BUY':
-            sl = last_close - (last_atr * atr_multiplier)
-            tp = last_close + (last_atr * atr_multiplier * 2)
-            return sl, tp
-        elif action == 'SELL':
-            sl = last_close + (last_atr * atr_multiplier)
-            tp = last_close - (last_atr * atr_multiplier * 2)
-            return sl, tp
+        # Determine the action string and confidence scale based on the target position
+        if target_pos > 0.05:
+            action = 'BUY'
+            confidence_scale = target_pos
+            sl_price = last_close - (last_atr * atr_multiplier)
+            tp_price = last_close + (last_atr * atr_multiplier * 2)
+        elif target_pos < -0.05:
+            action = 'SELL'
+            confidence_scale = abs(target_pos)
+            sl_price = last_close + (last_atr * atr_multiplier)
+            tp_price = last_close - (last_atr * atr_multiplier * 2)
+        else:
+            action = 'HOLD'
+            confidence_scale = 0.0
             
-        return 0.0, 0.0
+        return action, confidence_scale, sl_price, tp_price

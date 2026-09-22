@@ -12,7 +12,10 @@ load_dotenv()
 app = FastAPI(title="Prop Firm Command Center API")
 
 # Security configuration
+import logging
 API_KEY = os.getenv("API_KEY", "dev_secret_key_change_me_in_production")
+if API_KEY == "dev_secret_key_change_me_in_production":
+    logging.warning("WARNING: Using default dev API_KEY. Please set API_KEY in .env file!")
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -39,15 +42,16 @@ STATE_FILE = "state.json"
 LOG_FILE = "bot.log"
 
 class ConfigModel(BaseModel):
-    bot_status: str
-    symbols_to_trade: List[str]
-    timeframe: int
-    initial_account_balance: float
-    risk_per_trade_usd: float
-    strategy: str
-    model_path: str
-    max_daily_loss_pct: float
-    max_trailing_dd_pct: float
+    bot_status: str = "stopped"
+    symbols_to_trade: List[str] = ["XAUUSD"]
+    timeframe: int = 5
+    initial_account_balance: float = 25000.0
+    risk_per_trade_usd: float = 125.0
+    strategy: str = "DynamicRLStrategy"
+    model_path: str = "strategy/models/ppo_XAUUSD_m5.zip"
+    max_daily_loss_pct: float = 0.04
+    max_trailing_dd_pct: float = 0.12
+    max_daily_trades: int = 10
 
 @app.get("/api/state")
 def get_state(api_key: APIKey = Depends(get_api_key)):

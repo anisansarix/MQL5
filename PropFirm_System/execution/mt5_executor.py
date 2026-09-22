@@ -38,7 +38,7 @@ class MT5Executor:
         logging.info(f"Order successful. Ticket: {result.order}")
         return True
 
-    def place_market_order(self, symbol: str, action: str, lot_size: float, sl_price: float = 0.0, tp_price: float = 0.0):
+    def place_market_order(self, symbol: str, action: str, lot_size: float, sl_price: float = 0.0, tp_price: float = 0.0, magic: int = 234000):
         """Places a market buy or sell order."""
         if not mt5.symbol_select(symbol, True):
             logging.error(f"Failed to select symbol {symbol}")
@@ -57,12 +57,11 @@ class MT5Executor:
             logging.error(f"Invalid action: {action}")
             return False
             
-        # Determine correct filling mode dynamically
         filling_mode = mt5.ORDER_FILLING_FOK
         if symbol_info is not None:
-            if symbol_info.filling_mode & 1: # FOK
+            if symbol_info.filling_mode & 1: 
                 filling_mode = mt5.ORDER_FILLING_FOK
-            elif symbol_info.filling_mode & 2: # IOC
+            elif symbol_info.filling_mode & 2: 
                 filling_mode = mt5.ORDER_FILLING_IOC
             else:
                 filling_mode = mt5.ORDER_FILLING_RETURN
@@ -76,7 +75,7 @@ class MT5Executor:
             "sl": float(sl_price),
             "tp": float(tp_price),
             "deviation": 20,
-            "magic": 234000,
+            "magic": magic,
             "comment": "Prop Firm Bot",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_mode,
@@ -104,6 +103,55 @@ class MT5Executor:
         logging.info(f"Position {ticket} modified successfully. New SL: {sl_price:.4f}, TP: {tp_price:.4f}")
         return True
 
+    def close_position(self, ticket: int, symbol: str) -> bool:
+        """Closes a specific position by ticket."""
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return False
+        pos = positions[0]
+        
+        tick = mt5.symbol_info_tick(symbol)
+        symbol_info = mt5.symbol_info(symbol)
+        
+        if pos.type == mt5.ORDER_TYPE_BUY:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+        else:
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+            
+        filling_mode = mt5.ORDER_FILLING_FOK
+        if symbol_info is not None:
+            if symbol_info.filling_mode & 1:
+                filling_mode = mt5.ORDER_FILLING_FOK
+            elif symbol_info.filling_mode & 2:
+                filling_mode = mt5.ORDER_FILLING_IOC
+            else:
+                filling_mode = mt5.ORDER_FILLING_RETURN
+            
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": pos.volume,
+            "type": order_type,
+            "position": pos.ticket,
+            "price": price,
+            "deviation": 20,
+            "magic": pos.magic,
+            "comment": "Bot Close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling_mode,
+        }
+        
+        result = mt5.order_send(request)
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            logging.info(f"Successfully closed position {pos.ticket} on {symbol}")
+            return True
+        else:
+            err_code = mt5.last_error() if result is None else result.retcode
+            logging.warning(f"Failed to close {pos.ticket}, error: {err_code}")
+            return False
+
     def close_all_positions(self):
         """Emergency method to close all open positions."""
         positions = mt5.positions_get()
@@ -113,61 +161,15 @@ class MT5Executor:
         success_all = True
         
         for pos in positions:
-            tick = mt5.symbol_info_tick(pos.symbol)
-            symbol_info = mt5.symbol_info(pos.symbol)
-            
-            if pos.type == mt5.ORDER_TYPE_BUY:
-                order_type = mt5.ORDER_TYPE_SELL
-                price = tick.bid
-            else:
-                order_type = mt5.ORDER_TYPE_BUY
-                price = tick.ask
-                
-            filling_mode = mt5.ORDER_FILLING_FOK
-            if symbol_info is not None:
-                if symbol_info.filling_mode & 1:
-                    filling_mode = mt5.ORDER_FILLING_FOK
-                elif symbol_info.filling_mode & 2:
-                    filling_mode = mt5.ORDER_FILLING_IOC
-                else:
-                    filling_mode = mt5.ORDER_FILLING_RETURN
-                
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": pos.symbol,
-                "volume": pos.volume,
-                "type": order_type,
-                "position": pos.ticket,
-                "price": price,
-                "deviation": 20,
-                "magic": 234000,
-                "comment": "Emergency Close",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling_mode,
-            }
-            
-            # Retry loop: try twice
-            pos_closed = False
-            for attempt in range(2):
-                result = mt5.order_send(request)
-                if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
-                    logging.info(f"Successfully closed position {pos.ticket} on {pos.symbol}")
-                    pos_closed = True
-                    break
-                else:
-                    err_code = mt5.last_error() if result is None else result.retcode
-                    logging.warning(f"Failed to close {pos.ticket} on attempt {attempt+1}, error: {err_code}")
-                    # Re-fetch tick price for retry
-                    import time
-                    time.sleep(0.5)
-                    tick = mt5.symbol_info_tick(pos.symbol)
-                    request["price"] = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
-                    
-            if not pos_closed:
-                msg = f"EMERGENCY CLOSE FAILED for position {pos.ticket} on {pos.symbol}!"
-                logging.critical(msg)
-                send_alert(msg, "CRITICAL")
-                success_all = False
+            if not self.close_position(pos.ticket, pos.symbol):
+                # Retry once
+                import time
+                time.sleep(0.5)
+                if not self.close_position(pos.ticket, pos.symbol):
+                    msg = f"EMERGENCY CLOSE FAILED for position {pos.ticket} on {pos.symbol}!"
+                    logging.critical(msg)
+                    send_alert(msg, "CRITICAL")
+                    success_all = False
                 
         if success_all:
             logging.info("All positions closed successfully.")

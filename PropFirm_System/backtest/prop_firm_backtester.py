@@ -2,15 +2,33 @@ import sys
 import os
 import pandas as pd
 import numpy as np
-import ta
 import logging
+import pytz
+from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from risk_manager.prop_firm_guard import PropFirmGuard
 from data_pipeline.mt5_data_fetcher import MT5DataFetcher
+from strategy.ny_trend_continuation import NYTrendContinuation
 import MetaTrader5 as mt5
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+class MockFetcher:
+    def __init__(self, df_h1, df_m15, df_m5):
+        self.data = {
+            mt5.TIMEFRAME_H1: df_h1,
+            mt5.TIMEFRAME_M15: df_m15,
+            mt5.TIMEFRAME_M5: df_m5
+        }
+        self.current_time = None
+        
+    def fetch_historical_data(self, symbol, timeframe, num_candles):
+        df = self.data[timeframe]
+        sliced_df = df[df.index <= self.current_time]
+        if sliced_df.empty:
+            return pd.DataFrame()
+        return sliced_df.iloc[-num_candles:]
 
 class PropFirmBacktester:
     def __init__(self, initial_balance=100000.0, risk_per_trade_usd=500.0):
@@ -20,88 +38,86 @@ class PropFirmBacktester:
         self.balance = initial_balance
         self.equity_curve = []
         self.trades = []
-
-    def prepare_data(self, df: pd.DataFrame):
-        """Pre-calculates all indicators for the entire dataset for fast backtesting."""
-        df['ema_fast'] = ta.trend.ema_indicator(df['close'], window=50)
-        df['ema_slow'] = ta.trend.ema_indicator(df['close'], window=200)
-        df['rsi'] = ta.momentum.rsi(df['close'], window=14)
-        df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
-        return df.dropna()
-
-    def run(self, symbol: str, timeframe, num_candles: int = 10000):
+        self.strategy = NYTrendContinuation()
+        
+    def run(self, symbol: str, num_candles: int = 10000):
         print(f"--- Starting Prop Firm Backtest for {symbol} ---")
         fetcher = MT5DataFetcher()
-        df = fetcher.fetch_historical_data(symbol, timeframe, num_candles)
+        df_h1 = fetcher.fetch_historical_data(symbol, mt5.TIMEFRAME_H1, num_candles // 12)
+        df_m15 = fetcher.fetch_historical_data(symbol, mt5.TIMEFRAME_M15, num_candles // 3)
+        df_m5 = fetcher.fetch_historical_data(symbol, mt5.TIMEFRAME_M5, num_candles)
+        
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            print("Failed to get symbol info.")
+            fetcher.shutdown()
+            return
+            
+        tick_size = symbol_info.trade_tick_size
+        tick_value = symbol_info.trade_tick_value
         fetcher.shutdown()
 
-        if df.empty:
+        if df_m5.empty:
             print("Failed to get historical data.")
             return
 
-        df = self.prepare_data(df)
+        mock_fetcher = MockFetcher(df_h1, df_m15, df_m5)
         
         open_position = None
         current_day = None
 
-        for index, row in df.iterrows():
-            # Update Daily Balance for Prop Firm Rule at the start of a new day
+        for index in df_m5.index[100:]:
+            row = df_m5.loc[index]
+            
             day_str = index.strftime('%Y-%m-%d')
             if day_str != current_day:
                 self.guard.start_of_day_balance = self.balance
                 current_day = day_str
 
-            # Check if we hit SL or TP if we have an open position
             if open_position:
                 if open_position['type'] == 'BUY':
                     if row['low'] <= open_position['sl']:
-                        self._close_trade(index, open_position['sl'], open_position, "Stop Loss")
+                        self._close_trade(index, open_position['sl'], open_position, "Stop Loss", tick_size, tick_value)
                         open_position = None
                     elif row['high'] >= open_position['tp']:
-                        self._close_trade(index, open_position['tp'], open_position, "Take Profit")
+                        self._close_trade(index, open_position['tp'], open_position, "Take Profit", tick_size, tick_value)
                         open_position = None
                 elif open_position['type'] == 'SELL':
                     if row['high'] >= open_position['sl']:
-                        self._close_trade(index, open_position['sl'], open_position, "Stop Loss")
+                        self._close_trade(index, open_position['sl'], open_position, "Stop Loss", tick_size, tick_value)
                         open_position = None
                     elif row['low'] <= open_position['tp']:
-                        self._close_trade(index, open_position['tp'], open_position, "Take Profit")
+                        self._close_trade(index, open_position['tp'], open_position, "Take Profit", tick_size, tick_value)
                         open_position = None
-                continue # Skip opening new trades while in a position
+                continue 
 
-            # Prop firm checks (simulated)
-            # If our balance ever drops below rules, we fail the challenge.
             daily_dd = (self.guard.start_of_day_balance - self.balance) / self.guard.start_of_day_balance
             total_dd = (self.initial_balance - self.balance) / self.initial_balance
-            if daily_dd >= self.guard.max_daily_loss_pct or total_dd >= self.guard.max_total_loss_pct:
+            if daily_dd >= self.guard.max_daily_loss_pct or total_dd >= self.guard.max_trailing_dd_pct:
                 print(f"FAILED PROP FIRM CHALLENGE at {index}. Balance: {self.balance}")
                 break
 
-            # Strategy Logic (Replicating base_strategy)
-            prev_row = df.shift(1).loc[index]
+            mock_fetcher.current_time = index
+            action, sl, tp = self.strategy.analyze_symbol(symbol, mock_fetcher)
             
-            golden_cross = prev_row['ema_fast'] <= prev_row['ema_slow'] and row['ema_fast'] > row['ema_slow']
-            death_cross = prev_row['ema_fast'] >= prev_row['ema_slow'] and row['ema_fast'] < row['ema_slow']
-
-            if golden_cross and row['rsi'] < 70:
-                sl = row['close'] - (row['atr'] * 1.5)
-                tp = row['close'] + (row['atr'] * 3.0) # 1:2 RR
-                open_position = {'type': 'BUY', 'entry_price': row['close'], 'sl': sl, 'tp': tp, 'entry_time': index}
-                
-            elif death_cross and row['rsi'] > 30:
-                sl = row['close'] + (row['atr'] * 1.5)
-                tp = row['close'] - (row['atr'] * 3.0)
-                open_position = {'type': 'SELL', 'entry_price': row['close'], 'sl': sl, 'tp': tp, 'entry_time': index}
+            if action in ['BUY', 'SELL']:
+                sl_distance_price = abs(row['close'] - sl)
+                lot_size = self.guard.calculate_position_size(symbol, self.risk_per_trade_usd, sl_distance_price)
+                if lot_size > 0:
+                    open_position = {'type': action, 'entry_price': row['close'], 'sl': sl, 'tp': tp, 'entry_time': index, 'lot_size': lot_size}
 
         self.print_results()
 
-    def _close_trade(self, exit_time, exit_price, pos, reason):
-        # Simplified PnL calculation (ignoring exact lot sizes and point values for this fast sim)
-        # We assume we risk exactly $500 per trade, so a SL is -$500, and a 1:2 TP is +$1000
+    def _close_trade(self, exit_time, exit_price, pos, reason, tick_size, tick_value):
+        price_diff = abs(exit_price - pos['entry_price'])
+        price_diff -= tick_size
+        if price_diff < 0: price_diff = 0
+        
+        ticks_won_lost = price_diff / tick_size
+        pnl = ticks_won_lost * tick_value * (pos['lot_size'] / 1.0)
+        
         if reason == "Stop Loss":
-            pnl = -self.risk_per_trade_usd
-        elif reason == "Take Profit":
-            pnl = self.risk_per_trade_usd * 2.0
+            pnl = -pnl
             
         self.balance += pnl
         self.equity_curve.append({'time': exit_time, 'balance': self.balance})
@@ -132,4 +148,4 @@ class PropFirmBacktester:
 
 if __name__ == "__main__":
     tester = PropFirmBacktester()
-    tester.run("EURUSD", mt5.TIMEFRAME_M15, num_candles=20000)
+    tester.run("XAUUSD", num_candles=20000)

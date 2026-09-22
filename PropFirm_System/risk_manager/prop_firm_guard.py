@@ -33,8 +33,12 @@ class PropFirmGuard:
             logging.info(f"Updated start of day balance to: {self.start_of_day_balance}")
 
     def get_daily_trades_count(self) -> int:
+        from config_manager import load_config
+        config = load_config()
+        symbols = config.get("symbols_to_trade", ["XAUUSD"])
+        
         # Use server time instead of local time
-        tick = mt5.symbol_info_tick("EURUSD")
+        tick = mt5.symbol_info_tick(symbols[0])
         if not tick:
             tick = mt5.symbol_info_tick("XAUUSD")
             
@@ -161,8 +165,12 @@ class PropFirmGuard:
         else:
             target_lot_size = lot_size_by_risk
         
-        lot_size = max(symbol_info.volume_min, min(symbol_info.volume_max, target_lot_size))
-        lot_size = round(lot_size / symbol_info.volume_step) * symbol_info.volume_step
+        lot_size = round(target_lot_size / symbol_info.volume_step) * symbol_info.volume_step
+        if lot_size < symbol_info.volume_min:
+            logging.warning(f"Calculated lot size {lot_size:.2f} is below broker minimum {symbol_info.volume_min}. Skipping trade.")
+            return 0.0
+            
+        lot_size = min(symbol_info.volume_max, lot_size)
         
         logging.info(f"Calculated lot size for {symbol}: {lot_size} (Risk: ${risk_amount_usd:.2f})")
         return lot_size

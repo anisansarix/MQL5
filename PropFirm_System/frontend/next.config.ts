@@ -1,7 +1,6 @@
 const nextConfig: import('next').NextConfig = {
   // @ts-ignore
-  allowedDevOrigins: [
-    '0292a87d99d7930e-115-96-46-169.serveousercontent.com',
+  allowedDevOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [
     'localhost',
     '127.0.0.1'
   ],

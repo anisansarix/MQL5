@@ -19,6 +19,14 @@ def prepare_data(df: pd.DataFrame):
     df['ema_slow'] = ta.trend.ema_indicator(df['close'], window=200)
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
+    
+    # Feature Scaling / Normalization
+    df['close_norm'] = df['close'].pct_change()
+    df['ema_fast_norm'] = (df['ema_fast'] / df['close']) - 1.0
+    df['ema_slow_norm'] = (df['ema_slow'] / df['close']) - 1.0
+    df['rsi_norm'] = df['rsi'] / 100.0
+    df['atr_norm'] = df['atr'] / df['close']
+    
     return df.dropna()
 
 def train_agent(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M15, num_candles=50000):

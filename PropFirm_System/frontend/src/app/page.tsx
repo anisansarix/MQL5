@@ -2,21 +2,26 @@
 
 import { useEffect, useState, useRef } from "react";
 import axios from "axios";
-import { LayoutDashboard, List, Clock, Gauge, Settings, Shield, MoreVertical, CircleDot } from "lucide-react";
+import { LayoutDashboard, List, Clock, Gauge, Settings, Shield, MoreVertical, CircleDot, X } from "lucide-react";
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time, ColorType } from "lightweight-charts";
+
+import { Toaster, toast } from 'react-hot-toast';
 
 export default function Home() {
   const [state, setState] = useState<any>(null);
   const [config, setConfig] = useState<any>(null);
-  const [chartData, setChartData] = useState<any[]>([]);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const [countdownStr, setCountdownStr] = useState<string>("");
   
   const [activeTab, setActiveTab] = useState<'positions' | 'history'>('positions');
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [logs, setLogs] = useState<string>("");
+  
+  // Config Modal State
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [configForm, setConfigForm] = useState<any>({});
 
   // Fetch State & Config
   useEffect(() => {
@@ -65,32 +70,9 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [state?.next_run_time]);
 
-  // Fetch Chart Data
-  useEffect(() => {
-    if (!config) return;
-    
-    const fetchChart = async () => {
-      try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
-        const apiKey = process.env.NEXT_PUBLIC_API_KEY || 'dev_secret_key_change_me_in_production';
-        
-        const symbol = config.symbols_to_trade?.[0] || 'XAUUSD';
-        const tf = config.timeframe || 15;
-        
-        const res = await axios.get(`${apiUrl}/chart?symbol=${symbol}&timeframe=${tf}&count=200`, { 
-          headers: { 'X-API-Key': apiKey } 
-        });
-        setChartData(res.data.data);
-      } catch (err) {
-        console.error("Error fetching chart data", err);
-      }
-    };
-    fetchChart();
-  }, [config?.symbols_to_trade, config?.timeframe]);
-
   // Chart Rendering
   useEffect(() => {
-    if (!chartContainerRef.current || chartData.length === 0) return;
+    if (!chartContainerRef.current || !state) return;
 
     if (!chartRef.current) {
       const chart = createChart(chartContainerRef.current, {
@@ -108,30 +90,57 @@ export default function Home() {
         },
       });
 
-      const candlestickSeries = chart.addCandlestickSeries({
-        upColor: '#00cc96',
-        downColor: '#ff4b4b',
-        borderVisible: false,
-        wickUpColor: '#00cc96',
-        wickDownColor: '#ff4b4b',
+      const areaSeries = chart.addAreaSeries({
+        lineColor: '#378ADD',
+        topColor: 'rgba(55, 138, 221, 0.4)',
+        bottomColor: 'rgba(55, 138, 221, 0.0)',
+        lineWidth: 2,
       });
 
       chartRef.current = chart;
-      seriesRef.current = candlestickSeries as any;
+      seriesRef.current = areaSeries as any;
     }
 
-    const formattedData: CandlestickData<Time>[] = chartData.map(d => ({
-      time: d.time as Time,
-      open: d.open,
-      high: d.high,
-      low: d.low,
-      close: d.close,
-    }));
+    let currentBalance = state.start_of_day_balance || 25000;
+    const formattedData: any[] = [];
+    
+    // Start of day
+    const startOfDay = new Date();
+    startOfDay.setHours(0,0,0,0);
+    formattedData.push({
+      time: Math.floor(startOfDay.getTime() / 1000) as Time,
+      value: currentBalance
+    });
 
-    seriesRef.current?.setData(formattedData);
+    if (state.history && state.history.length > 0) {
+      state.history.forEach((h: any) => {
+        currentBalance += h.profit;
+        if (h.time_raw) {
+          formattedData.push({
+            time: h.time_raw as Time,
+            value: currentBalance
+          });
+        }
+      });
+    }
+
+    if (state.positions && state.positions.length > 0 && state.equity) {
+       formattedData.push({
+         time: Math.floor(Date.now() / 1000) as Time,
+         value: state.equity
+       });
+    }
+
+    // Sort to ensure time is strictly ascending (required by lightweight-charts)
+    formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+
+    // Deduplicate exact timestamps
+    const dedupedData = formattedData.filter((v, i, a) => i === 0 || v.time !== a[i-1].time);
+
+    seriesRef.current?.setData(dedupedData);
     chartRef.current.timeScale().fitContent();
 
-  }, [chartData]);
+  }, [state?.history, state?.equity, state?.start_of_day_balance]);
 
   // Bot Status Toggle
   const toggleBotStatus = async () => {
@@ -147,10 +156,57 @@ export default function Home() {
         headers: { 'X-API-Key': apiKey } 
       });
       setConfig(updatedConfig);
+      toast.success(`Engine ${newStatus === 'running' ? 'started' : 'stopped'}!`);
     } catch (err) {
       console.error("Failed to update bot status", err);
+      toast.error("Failed to update engine status.");
     }
     setIsUpdatingStatus(false);
+  };
+
+  const openConfigModal = () => {
+    setConfigForm({
+      symbols_to_trade: config.symbols_to_trade?.join(',') || 'XAUUSD',
+      risk_per_trade_usd: config.risk_per_trade_usd || 125,
+      strategy: config.strategy || 'DynamicRLStrategy',
+      model_path: config.model_path || 'strategy/models/ppo_XAUUSD_m5.zip',
+      timeframe: config.timeframe || 5,
+      max_daily_loss_pct: config.max_daily_loss_pct || 0.04,
+      max_trailing_dd_pct: config.max_trailing_dd_pct || 0.12,
+      max_daily_trades: config.max_daily_trades || 10,
+      bot_status: config.bot_status,
+      initial_account_balance: config.initial_account_balance || 25000
+    });
+    setShowConfigModal(true);
+  };
+
+  const saveConfig = async (e: any) => {
+    e.preventDefault();
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+      const apiKey = process.env.NEXT_PUBLIC_API_KEY || 'dev_secret_key_change_me_in_production';
+      
+      const updatedConfig = {
+        ...configForm,
+        symbols_to_trade: configForm.symbols_to_trade.split(',').map((s: string) => s.trim()),
+        risk_per_trade_usd: Number(configForm.risk_per_trade_usd),
+        timeframe: Number(configForm.timeframe),
+        max_daily_loss_pct: Number(configForm.max_daily_loss_pct),
+        max_trailing_dd_pct: Number(configForm.max_trailing_dd_pct),
+        max_daily_trades: Number(configForm.max_daily_trades),
+        initial_account_balance: Number(configForm.initial_account_balance),
+      };
+
+      await axios.post(`${apiUrl}/config`, updatedConfig, { 
+        headers: { 'X-API-Key': apiKey } 
+      });
+      setConfig(updatedConfig);
+      setShowConfigModal(false);
+      toast.success("Settings saved and applied live!");
+    } catch (err) {
+      console.error("Failed to save config", err);
+      toast.error("Failed to save configuration.");
+    }
   };
 
   if (!state || !config) {
@@ -166,15 +222,71 @@ export default function Home() {
   const dailyDD = sod > 0 ? Math.max(0, ((sod - equity) / sod) * 100) : 0;
   const maxDD = hw > 0 ? Math.max(0, ((hw - equity) / hw) * 100) : 0;
 
-  const maxDailyLimitPct = config.max_daily_loss_pct ? (config.max_daily_loss_pct * 100).toFixed(0) : 5;
-  const maxTrailingLimitPct = config.max_trailing_dd_pct ? (config.max_trailing_dd_pct * 100).toFixed(0) : 10;
+  const maxDailyLimitPct = config.max_daily_loss_pct ? (config.max_daily_loss_pct * 100).toFixed(0) : 4;
+  const maxTrailingLimitPct = config.max_trailing_dd_pct ? (config.max_trailing_dd_pct * 100).toFixed(0) : 12;
 
   const positions = state.positions || [];
   const history = state.history || [];
   const openPnl = positions.reduce((acc: number, p: any) => acc + p.profit, 0);
 
   return (
-    <div className="min-h-screen bg-[#121212] text-white flex flex-col md:flex-row p-4 gap-4">
+    <div className="min-h-screen bg-[#121212] text-white flex flex-col md:flex-row p-4 gap-4 relative">
+      <Toaster position="top-right" toastOptions={{ style: { background: '#1a1a1a', color: '#fff', border: '1px solid #2a2a2a' } }} />
+      {/* Configuration Modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-6 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">Engine Configuration</h2>
+              <button onClick={() => setShowConfigModal(false)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+            </div>
+            <form onSubmit={saveConfig} className="flex flex-col gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Symbols to Trade (comma separated)</label>
+                <input type="text" value={configForm.symbols_to_trade} onChange={e => setConfigForm({...configForm, symbols_to_trade: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Risk per Trade (USD)</label>
+                <input type="number" step="1" value={configForm.risk_per_trade_usd} onChange={e => setConfigForm({...configForm, risk_per_trade_usd: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Strategy</label>
+                <select value={configForm.strategy} onChange={e => setConfigForm({...configForm, strategy: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2">
+                  <option value="DynamicRLStrategy">DynamicRLStrategy (AI)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Model Path (if FinRLStrategy)</label>
+                <input type="text" value={configForm.model_path} onChange={e => setConfigForm({...configForm, model_path: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Timeframe (Minutes)</label>
+                  <input type="number" value={configForm.timeframe} onChange={e => setConfigForm({...configForm, timeframe: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Max Daily Trades</label>
+                  <input type="number" value={configForm.max_daily_trades} onChange={e => setConfigForm({...configForm, max_daily_trades: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Max Daily Loss (%)</label>
+                  <input type="number" step="0.01" value={configForm.max_daily_loss_pct} onChange={e => setConfigForm({...configForm, max_daily_loss_pct: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Max Trailing Drawdown (%)</label>
+                  <input type="number" step="0.01" value={configForm.max_trailing_dd_pct} onChange={e => setConfigForm({...configForm, max_trailing_dd_pct: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
+                </div>
+              </div>
+              <button type="submit" className="w-full mt-4 bg-[#378ADD] hover:bg-[#2868a8] text-white font-medium py-2 rounded transition-colors">
+                Save & Apply Live
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar - hidden on mobile, visible on desktop */}
       <div className="hidden md:flex w-16 flex-shrink-0 border-r border-[#2a2a2a] flex-col items-center py-4 gap-4 bg-[#1a1a1a] rounded-xl">
         <div className="w-8 h-8 rounded-lg bg-[#378ADD] flex items-center justify-center mb-4">
@@ -185,7 +297,7 @@ export default function Home() {
         <button className="w-10 h-10 rounded-lg text-gray-500 hover:text-white flex items-center justify-center"><Clock size={18} /></button>
         <button className="w-10 h-10 rounded-lg text-gray-500 hover:text-white flex items-center justify-center"><Gauge size={18} /></button>
         <div className="mt-auto">
-          <button className="w-10 h-10 rounded-lg text-gray-500 hover:text-white flex items-center justify-center"><Settings size={18} /></button>
+          <button onClick={openConfigModal} className="w-10 h-10 rounded-lg text-gray-500 hover:text-white flex items-center justify-center"><Settings size={18} /></button>
         </div>
       </div>
 
@@ -194,10 +306,13 @@ export default function Home() {
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
           <div>
-            <h1 className="text-xl font-semibold">Command Center</h1>
+            <h1 className="text-xl font-semibold">Quadrium</h1>
             <p className="text-sm text-gray-400 mt-1">Strategy • {config.strategy || 'Unknown'} • ${sod.toLocaleString(undefined, {minimumFractionDigits: 0})}</p>
           </div>
           <div className="flex items-center gap-3 w-full md:w-auto">
+            <button onClick={openConfigModal} className="text-sm px-3 py-1.5 border border-[#2a2a2a] rounded-md text-gray-300 hover:bg-[#2a2a2a] flex items-center gap-2">
+              <Settings size={14} /> Configure
+            </button>
             <span className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md font-medium ${config.bot_status === 'running' ? 'text-[#00cc96] bg-[#00cc96]/10' : 'text-gray-400 bg-[#2a2a2a]'}`}>
               <CircleDot size={12} fill="currentColor" /> {config.bot_status === 'running' ? 'Live' : 'Paused'}
             </span>
@@ -218,7 +333,13 @@ export default function Home() {
 
         {/* Top 4 Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5 text-center flex flex-col justify-center">
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5 text-center flex flex-col justify-center relative">
+            {state.config_drift && Number(state.config_drift.config_daily_loss) !== Number(state.config_drift.guard_daily_loss) && (
+              <span className="absolute top-2 right-2 flex h-3 w-3" title="Config mismatch!">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+              </span>
+            )}
             <p className="text-sm text-gray-400 mb-2">Daily loss limit</p>
             <p className="text-3xl font-semibold mb-2">{dailyDD.toFixed(2)}%</p>
             <div>
@@ -227,7 +348,13 @@ export default function Home() {
               </span>
             </div>
           </div>
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5 text-center flex flex-col justify-center">
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5 text-center flex flex-col justify-center relative">
+            {state.config_drift && Number(state.config_drift.config_trailing_dd) !== Number(state.config_drift.guard_trailing_dd) && (
+              <span className="absolute top-2 right-2 flex h-3 w-3" title="Config mismatch!">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+              </span>
+            )}
             <p className="text-sm text-gray-400 mb-2">Max trailing drawdown</p>
             <p className="text-3xl font-semibold mb-2">{maxDD.toFixed(2)}%</p>
             <div>
@@ -256,15 +383,15 @@ export default function Home() {
           <div className="lg:col-span-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4 flex flex-col">
             <div className="flex justify-between items-center mb-4">
               <div>
-                <h2 className="text-sm font-medium">Live market • {config.symbols_to_trade?.[0] || 'XAUUSD'}</h2>
+                <h2 className="text-sm font-medium">Account Equity • Today</h2>
                 <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-xl font-semibold">{chartData.length > 0 ? chartData[chartData.length-1].close.toFixed(2) : "Loading..."}</span>
+                  <span className="text-xl font-semibold">${equity.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                   <span className={`text-xs font-medium tracking-wide bg-[#2a2a2a] px-2 py-0.5 rounded ml-2 ${config.bot_status === 'running' ? 'text-brand text-gray-300' : 'text-gray-500'}`}>
                     {config.bot_status === 'running' ? countdownStr : 'Bot Stopped'}
                   </span>
                 </div>
               </div>
-              <div className="bg-[#2a2a2a] text-xs px-3 py-1.5 rounded">{config.timeframe || 15}M</div>
+              <div className="bg-[#2a2a2a] text-xs px-3 py-1.5 rounded">Real-time</div>
             </div>
             
             <div ref={chartContainerRef} className="flex-1 w-full min-h-[300px]" />
