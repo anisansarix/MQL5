@@ -10,10 +10,14 @@ class MockSymbolInfo:
         self.volume_min = 0.01
         self.volume_max = 100.0
         self.volume_step = 0.01
+        self.trade_contract_size = 100.0
 
 @patch('risk_manager.prop_firm_guard.mt5')
 def test_calculate_position_size_tick_size_differs_from_point(mock_mt5):
     mock_mt5.symbol_info.return_value = MockSymbolInfo()
+    mock_mt5.account_info.return_value = MagicMock(margin_free=100000.0)
+    mock_mt5.symbol_info_tick.return_value = MagicMock(ask=4000.0)
+    
     guard = PropFirmGuard(initial_balance=100000.0)
     
     sl_distance_price = 10.0
@@ -25,6 +29,8 @@ def test_calculate_position_size_below_min(mock_mt5):
     symbol_info = MockSymbolInfo()
     symbol_info.volume_min = 1.0
     mock_mt5.symbol_info.return_value = symbol_info
+    mock_mt5.account_info.return_value = MagicMock(margin_free=100000.0)
+    mock_mt5.symbol_info_tick.return_value = MagicMock(ask=4000.0)
     
     guard = PropFirmGuard(initial_balance=100000.0)
     # Risk is very small ($10), SL distance = 10.0

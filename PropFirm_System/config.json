@@ -1,5 +1,5 @@
 {
-    "bot_status": "running",
+    "bot_status": "stopped",
     "symbols_to_trade": [
         "XAUUSD"
     ],

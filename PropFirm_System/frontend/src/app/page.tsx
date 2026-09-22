@@ -250,14 +250,12 @@ export default function Home() {
                 <input type="number" step="1" value={configForm.risk_per_trade_usd} onChange={e => setConfigForm({...configForm, risk_per_trade_usd: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" required/>
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Strategy</label>
-                <select value={configForm.strategy} onChange={e => setConfigForm({...configForm, strategy: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2">
-                  <option value="DynamicRLStrategy">DynamicRLStrategy (AI)</option>
-                </select>
+                <label className="block text-sm text-gray-400 mb-1">Strategy (Fixed)</label>
+                <input type="text" value="DynamicRLStrategy (AI)" disabled className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2 opacity-50 cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Model Path (if FinRLStrategy)</label>
-                <input type="text" value={configForm.model_path} onChange={e => setConfigForm({...configForm, model_path: e.target.value})} className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2" />
+                <label className="block text-sm text-gray-400 mb-1">Model Path (Fixed)</label>
+                <input type="text" value={configForm.model_path} disabled className="w-full bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2 opacity-50 cursor-not-allowed" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
