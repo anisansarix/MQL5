@@ -84,6 +84,26 @@ class MT5Executor:
         
         return self._execute_order(request)
 
+    def modify_position(self, ticket: int, symbol: str, sl_price: float, tp_price: float) -> bool:
+        """Modifies the Stop Loss and Take Profit of an existing position."""
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": symbol,
+            "position": ticket,
+            "sl": float(sl_price),
+            "tp": float(tp_price)
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            logging.error(f"Failed to modify position {ticket} (IPC error): {mt5.last_error()}")
+            return False
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error(f"Failed to modify position {ticket}, retcode={result.retcode}")
+            return False
+        
+        logging.info(f"Position {ticket} modified successfully. New SL: {sl_price:.4f}, TP: {tp_price:.4f}")
+        return True
+
     def close_all_positions(self):
         """Emergency method to close all open positions."""
         positions = mt5.positions_get()

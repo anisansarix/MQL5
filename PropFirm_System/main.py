@@ -231,9 +231,25 @@ def main():
                                     # If action is HOLD (0 in RL) or OPPOSITE of our position, we CLOSE it
                                     if action == 'HOLD' or (action == 'BUY' and pos_type == 'SELL') or (action == 'SELL' and pos_type == 'BUY'):
                                         logging.info(f"Dynamic Exit: Strategy signaled {action}, closing existing {pos_type} position {pos.ticket} on {symbol}")
-                                        tick = mt5.symbol_info_tick(symbol)
-                                        close_price = tick.bid if pos_type == 'BUY' else tick.ask
                                         executor.close_all_positions() # Simple catch-all to flatten
+                                    elif action == pos_type and sl_price > 0 and tp_price > 0:
+                                        # Strategy agrees with our current position. Check for Trailing Stop logic.
+                                        tick = mt5.symbol_info_tick(symbol)
+                                        modify = False
+                                        if pos_type == 'BUY':
+                                            # For BUY, tighter SL is HIGHER than old SL
+                                            if sl_price > pos.sl and sl_price < tick.bid:
+                                                modify = True
+                                        elif pos_type == 'SELL':
+                                            # For SELL, tighter SL is LOWER than old SL
+                                            if (pos.sl == 0.0 or sl_price < pos.sl) and sl_price > tick.ask:
+                                                modify = True
+                                        
+                                        if modify:
+                                            logging.info(f"Smart Target Update: Trailing {pos_type} stops for {pos.ticket} to SL: {sl_price:.4f}")
+                                            executor.modify_position(pos.ticket, symbol, sl_price, tp_price)
+                                        else:
+                                            logging.info(f"Monitoring active {pos_type} position {pos.ticket}. Strategy maintained {action} conviction.")
                             
                             # Re-check open positions after potential closures
                             positions = mt5.positions_get(symbol=symbol)

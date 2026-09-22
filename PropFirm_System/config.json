@@ -1,12 +1,13 @@
 {
-    "bot_status": "stopped",
-    "symbols_to_trade": ["XAUUSD"],
+    "bot_status": "running",
+    "symbols_to_trade": [
+        "XAUUSD"
+    ],
     "timeframe": 5,
     "initial_account_balance": 25000.0,
     "risk_per_trade_usd": 125.0,
     "strategy": "FinRLStrategy",
     "model_path": "strategy/models/ppo_XAUUSD_m5.zip",
     "max_daily_loss_pct": 0.04,
-    "max_trailing_dd_pct": 0.12,
-    "max_daily_trades": 999
+    "max_trailing_dd_pct": 0.12
 }
